@@ -46,6 +46,10 @@ target_sources(RebornGuitar
         src/BladeFilters.h
         src/UMPConverter.cpp
         src/UMPConverter.h
+        src/MIDINegotiator.cpp
+        src/MIDINegotiator.h
+        src/GuitarProfile.cpp
+        src/GuitarProfile.h
 )
 
 target_compile_definitions(RebornGuitar
