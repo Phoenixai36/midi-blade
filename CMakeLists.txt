@@ -25,10 +25,11 @@ add_subdirectory(JUCE)
 juce_add_plugin(RebornGuitar
     PLUGIN_MANUFACTURER_CODE  Rbrn
     PLUGIN_CODE               Rbg1
-    FORMATS                   VST3 LV2 Standalone
+    FORMATS                   VST3 Standalone          # FIX: dropped LV2 (needs valid URI) and VST2 (conflicts VST3)
     PRODUCT_NAME              "RebornGuitar"
     PLUGIN_MANUFACTURER       "Phoenixai36"
     PLUGIN_DESCRIPTION        "Polyphonic guitar-to-MIDI: IIR hex blades + optional crepe AI model"
+    LV2URI                    "urn:phoenixai36:reborguitar"   # kept for future LV2, won't build unless added back to FORMATS
     IS_MIDI_EFFECT            FALSE
     IS_SYNTH                  FALSE
     NEEDS_MIDI_INPUT          FALSE
@@ -51,6 +52,7 @@ target_compile_definitions(RebornGuitar
     PUBLIC
         JUCE_WEB_BROWSER=0
         JUCE_USE_CURL=0
+        JUCE_VST3_CAN_REPLACE_VST2=0                  # FIX: disables VST2/VST3 automation conflict check
         $<$<BOOL:${REBORN_USE_TORCH}>:REBORN_USE_TORCH>
 )
 
