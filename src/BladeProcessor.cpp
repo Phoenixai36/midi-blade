@@ -1,18 +1,12 @@
 #include "BladeProcessor.h"
-#include "BladeDSP.h"
 
-// ============================================================
-// JUCE entry point – required by VST3/Standalone plugin client
-// ============================================================
+// ---- JUCE entry point ------------------------------------------------
 juce::AudioProcessor* JUCE_CALLTYPE createPluginFilter()
 {
     return new BladeProcessor();
 }
 
-// ============================================================
-// BladeProcessor implementation
-// ============================================================
-
+// ---- Constructor / Destructor ----------------------------------------
 BladeProcessor::BladeProcessor()
     : AudioProcessor(BusesProperties()
         .withInput ("Input",  juce::AudioChannelSet::mono(), true)
@@ -21,40 +15,52 @@ BladeProcessor::BladeProcessor()
 
 BladeProcessor::~BladeProcessor() {}
 
+// ---- Playback --------------------------------------------------------
 void BladeProcessor::prepareToPlay(double sampleRate, int samplesPerBlock)
 {
     currentSampleRate = sampleRate;
     bladeDSP.prepare(sampleRate, samplesPerBlock);
 }
 
+void BladeProcessor::releaseResources()
+{
+    bladeDSP.reset();
+}
+
 void BladeProcessor::processBlock(juce::AudioBuffer<float>& buffer,
                                   juce::MidiBuffer&         midiMessages)
 {
-    juce::ignoreUnused(midiMessages);
-
     if (buffer.getNumChannels() < 1 || buffer.getNumSamples() < 1)
         return;
 
     const float* monoIn  = buffer.getReadPointer(0);
     const int    numSamp = buffer.getNumSamples();
 
-    // Run hex-blade IIR tracker (or crepe if REBORN_USE_TORCH compiled)
-    auto events = bladeDSP.process(monoIn, numSamp);
+    // Hex-blade IIR tracker -> NoteEvents
+    std::vector<NoteEvent> events = bladeDSP.process(monoIn, numSamp);
 
-    // Push NoteEvents into MIDI buffer for downstream instruments
-    for (const auto& ev : events)
+    for (size_t i = 0; i < events.size(); ++i)
     {
-        auto msg = ev.isOn
-            ? juce::MidiMessage::noteOn (1, ev.note, (juce::uint8)ev.velocity)
-            : juce::MidiMessage::noteOff(1, ev.note);
+        const NoteEvent& ev = events[i];
+        juce::MidiMessage msg;
+        if (ev.isOn)
+            msg = juce::MidiMessage::noteOn (1, ev.note, (juce::uint8)ev.velocity);
+        else
+            msg = juce::MidiMessage::noteOff(1, ev.note, (juce::uint8)0);
+
         midiMessages.addEvent(msg, ev.samplePos);
     }
 
-    // Clear audio out (this is a MIDI-only plugin)
-    buffer.clear();
+    buffer.clear();  // MIDI-only plugin, no audio out
 }
 
-void BladeProcessor::releaseResources()
+// ---- State -----------------------------------------------------------
+void BladeProcessor::getStateInformation(juce::MemoryBlock& destData)
 {
-    bladeDSP.reset();
+    juce::ignoreUnused(destData);  // no params yet
+}
+
+void BladeProcessor::setStateInformation(const void* data, int sizeInBytes)
+{
+    juce::ignoreUnused(data, sizeInBytes);
 }
