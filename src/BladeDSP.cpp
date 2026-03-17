@@ -11,7 +11,10 @@ void BladeDSP::prepare(double sampleRate, int /*blockSize*/)
     sr = sampleRate;
     juce::dsp::ProcessSpec spec { sampleRate, 512, 1 };
 
-    for (int i = 0; i < 6; ++i) {
+    // Initialize with standard tuning
+    setTuningPreset(TuningPreset::Standard);
+
+    for (int i = 0; i < MAX_STRINGS; ++i) {
         // Bandpass centred on each open-string fundamental
         *blades[i].coefficients = *juce::dsp::IIR::Coefficients<float>::makeBandPass(
             sampleRate, kStringFreqs[i], kQ);
@@ -19,10 +22,49 @@ void BladeDSP::prepare(double sampleRate, int /*blockSize*/)
         blades[i].reset();
         envFollower[i] = 0.f;
         activeNote[i]  = false;
-        // Map string idx → MIDI root note (E2=40, A2=45, D3=50, G3=55, B3=59, E4=64)
-        static const int roots[6] = { 40, 45, 50, 55, 59, 64 };
-        midiNote[i] = roots[i];
     }
+}
+
+void BladeDSP::setTuningPreset(TuningPreset preset)
+{
+    switch (preset) {
+        case TuningPreset::Standard:
+            currentTuning = { 40, 45, 50, 55, 59, 64 };  // EADGBE
+            break;
+        case TuningPreset::DropD:
+            currentTuning = { 38, 45, 50, 55, 59, 64 };  // DADGBE
+            break;
+        case TuningPreset::OpenG:
+            currentTuning = { 38, 43, 50, 55, 57, 62 }; // DGDGBD
+            break;
+        case TuningPreset::HalfStepDown:
+            currentTuning = { 39, 44, 49, 54, 58, 63 };  // Eb Ab Db Gb Bb Eb
+            break;
+        case TuningPreset::FullStepDown:
+            currentTuning = { 36, 41, 46, 51, 55, 60 };  // D G C F A D
+            break;
+        default:
+            currentTuning = { 40, 45, 50, 55, 59, 64 };  // Default to standard
+            break;
+    }
+    
+    // Update MIDI notes for each string
+    for (int i = 0; i < MAX_STRINGS; ++i) {
+        midiNote[i] = currentTuning[i];
+    }
+}
+
+void BladeDSP::setCustomTuning(const std::array<uint8_t, MAX_STRINGS>& tuning)
+{
+    currentTuning = tuning;
+    for (int i = 0; i < MAX_STRINGS; ++i) {
+        midiNote[i] = currentTuning[i];
+    }
+}
+
+std::array<uint8_t, MAX_STRINGS> BladeDSP::getCurrentTuning() const
+{
+    return currentTuning;
 }
 
 void BladeDSP::reset()
@@ -30,6 +72,9 @@ void BladeDSP::reset()
     for (auto& f : blades) f.reset();
     envFollower.fill(0.f);
     activeNote.fill(false);
+    for (int i = 0; i < MAX_STRINGS; ++i) {
+        bladeStates[i] = BladeState();
+    }
 }
 
 void BladeDSP::loadCrepeModel(const juce::String& ptlPath)
@@ -69,7 +114,7 @@ std::vector<NoteEvent> BladeDSP::bladeTrack(const float* audio, int numSamples)
     for (int s = 0; s < numSamples; ++s) {
         float sample = audio[s];
 
-        for (int i = 0; i < 6; ++i) {
+        for (int i = 0; i < MAX_STRINGS; ++i) {
             float filtered = blades[i].processSample(sample);
             float rectified = std::abs(filtered);
 
@@ -125,7 +170,7 @@ BladeState& BladeDSP::getBladeState(int stringIndex)
 void BladeDSP::processMIDI2(juce::AudioBuffer<float>& buffer, juce::MidiBuffer& midiMessages)
 {
     // For each active blade/string
-    for (int i = 0; i < 6; ++i) {
+    for (int i = 0; i < MAX_STRINGS; ++i) {
         auto& blade = bladeStates[i];
         
         // Get detected pitch from filters
@@ -202,7 +247,7 @@ void BladeDSP::processMIDI2(juce::AudioBuffer<float>& buffer, juce::MidiBuffer& 
 void BladeDSP::processMIDI1(juce::AudioBuffer<float>& buffer, juce::MidiBuffer& midiMessages)
 {
     // MIDI 1.0 fallback - same logic but with 14-bit/7-bit values
-    for (int i = 0; i < 6; ++i) {
+    for (int i = 0; i < MAX_STRINGS; ++i) {
         auto& blade = bladeStates[i];
         float f0 = 0.0f;
         if (envFollower[i] > threshold) {

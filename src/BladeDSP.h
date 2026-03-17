@@ -95,10 +95,38 @@ struct BladeState {
 
 class BladeDSP {
 public:
-    // Fundamental freqs EADGBE (Hz)
-    static constexpr double kStringFreqs[6] = {82.4, 110.0, 146.8, 196.0, 246.9, 329.6};
+    // Fundamental freqs EADGBE (Hz) - using MAX_STRINGS
+    static constexpr double kStringFreqs[MAX_STRINGS] = {82.4, 110.0, 146.8, 196.0, 246.9, 329.6};
     static constexpr double kQ             = 4.0;    // bandpass Q
     static constexpr float  kNoiseFloor    = 0.01f;  // gate threshold
+    
+    // Fret mapping for 6-string guitar (standard tuning to MIDI notes)
+    // E2=40, A2=45, D3=50, G3=55, B3=59, E4=64
+    static constexpr int kMidiRootNotes[MAX_STRINGS] = { 40, 45, 50, 55, 59, 64 };
+    
+    // String names for debugging/UI
+    static constexpr const char* kStringNames[MAX_STRINGS] = { 
+        "Low E (6th)", 
+        "A (5th)", 
+        "D (4th)", 
+        "G (3rd)", 
+        "B (2nd)", 
+        "High E (1st)" 
+    };
+    
+    // Tuning presets
+    enum class TuningPreset {
+        Standard,     // EADGBE
+        DropD,        // DADGBE  
+        OpenG,        // DGDGBD
+        HalfStepDown, // EbAbDbGbBbEb
+        FullStepDown,// DGCFAD
+        Custom        // User-defined
+    };
+    
+    void setTuningPreset(TuningPreset preset);
+    void setCustomTuning(const std::array<uint8_t, MAX_STRINGS>& tuning);
+    std::array<uint8_t, MAX_STRINGS> getCurrentTuning() const;
 
     BladeDSP()  = default;
     ~BladeDSP() = default;
@@ -123,15 +151,16 @@ public:
 
 private:
     double sr { 44100.0 };
-    std::array<juce::dsp::IIR::Filter<float>, 6> blades;
-    std::array<float, 6> envFollower {};
-    std::array<bool,  6> activeNote  {};
-    std::array<int,   6> midiNote    {};
-
+    std::array<juce::dsp::IIR::Filter<float>, MAX_STRINGS> blades;
+    std::array<float, MAX_STRINGS> envFollower {};
+    std::array<bool,  MAX_STRINGS> activeNote  {};
+    std::array<int,   MAX_STRINGS> midiNote    {};
+    std::array<uint8_t, MAX_STRINGS> currentTuning {};
+    
     // MIDI 2.0 support
     MIDINegotiator midiNegotiator;
     UMPConverter umpConverter;
-    BladeState bladeStates[6];  // 6 strings
+    BladeState bladeStates[MAX_STRINGS];  // MAX_STRINGS (6) strings
 
     int frequencyToMidiNote(float hz) const;
     float detectVelocity(int stringIndex) const;
