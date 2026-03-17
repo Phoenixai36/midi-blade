@@ -1,8 +1,21 @@
 #include "BladeProcessor.h"
+#include "BladeDSP.h"
+
+// ============================================================
+// JUCE entry point – required by VST3/Standalone plugin client
+// ============================================================
+juce::AudioProcessor* JUCE_CALLTYPE createPluginFilter()
+{
+    return new BladeProcessor();
+}
+
+// ============================================================
+// BladeProcessor implementation
+// ============================================================
 
 BladeProcessor::BladeProcessor()
     : AudioProcessor(BusesProperties()
-        .withInput("Input", juce::AudioChannelSet::mono(), true)
+        .withInput ("Input",  juce::AudioChannelSet::mono(), true)
         .withOutput("Output", juce::AudioChannelSet::mono(), true))
 {}
 
@@ -11,31 +24,37 @@ BladeProcessor::~BladeProcessor() {}
 void BladeProcessor::prepareToPlay(double sampleRate, int samplesPerBlock)
 {
     currentSampleRate = sampleRate;
-    juce::dsp::ProcessSpec spec{ sampleRate, (juce::uint32)samplesPerBlock, 1 };
-
-    for (int i = 0; i < NUM_BLADES; ++i)
-    {
-        // Bandpass filter centred on each string frequency
-        auto coeffs = juce::dsp::IIR::Coefficients<float>::makeBandPass(
-            sampleRate, STRING_FREQS[i], 2.0f);
-        *bladeFilters[i].coefficients = *coeffs;
-        bladeFilters[i].prepare(spec);
-    }
+    bladeDSP.prepare(sampleRate, samplesPerBlock);
 }
 
-void BladeProcessor::processBlock(juce::AudioBuffer<float>& buffer, juce::MidiBuffer& midiMessages)
+void BladeProcessor::processBlock(juce::AudioBuffer<float>& buffer,
+                                  juce::MidiBuffer&         midiMessages)
 {
-    // TODO: Feed each blade filter → crepe f0 detect → UMP out
-    // Phase 3 implementation
-    for (int blade = 0; blade < NUM_BLADES; ++blade)
-    {
-        auto channelData = buffer.getWritePointer(0);
-        juce::dsp::AudioBlock<float> block(buffer);
-        juce::dsp::ProcessContextReplacing<float> context(block);
-        bladeFilters[blade].process(context);
+    juce::ignoreUnused(midiMessages);
 
-        // TODO: crepe f0 → umpConverter.convert(f0, blade) → midiMessages
+    if (buffer.getNumChannels() < 1 || buffer.getNumSamples() < 1)
+        return;
+
+    const float* monoIn  = buffer.getReadPointer(0);
+    const int    numSamp = buffer.getNumSamples();
+
+    // Run hex-blade IIR tracker (or crepe if REBORN_USE_TORCH compiled)
+    auto events = bladeDSP.process(monoIn, numSamp);
+
+    // Push NoteEvents into MIDI buffer for downstream instruments
+    for (const auto& ev : events)
+    {
+        auto msg = ev.isOn
+            ? juce::MidiMessage::noteOn (1, ev.note, (juce::uint8)ev.velocity)
+            : juce::MidiMessage::noteOff(1, ev.note);
+        midiMessages.addEvent(msg, ev.samplePos);
     }
+
+    // Clear audio out (this is a MIDI-only plugin)
+    buffer.clear();
 }
 
-void BladeProcessor::releaseResources() {}
+void BladeProcessor::releaseResources()
+{
+    bladeDSP.reset();
+}
