@@ -11,7 +11,10 @@ void BladeDSP::prepare(double sampleRate, int /*blockSize*/)
     sr = sampleRate;
     juce::dsp::ProcessSpec spec { sampleRate, 512, 1 };
 
-    for (int i = 0; i < 6; ++i) {
+    // Initialize with standard tuning
+    setTuningPreset(TuningPreset::Standard);
+
+    for (int i = 0; i < MAX_STRINGS; ++i) {
         // Bandpass centred on each open-string fundamental
         *blades[i].coefficients = *juce::dsp::IIR::Coefficients<float>::makeBandPass(
             sampleRate, kStringFreqs[i], kQ);
@@ -19,10 +22,49 @@ void BladeDSP::prepare(double sampleRate, int /*blockSize*/)
         blades[i].reset();
         envFollower[i] = 0.f;
         activeNote[i]  = false;
-        // Map string idx → MIDI root note (E2=40, A2=45, D3=50, G3=55, B3=59, E4=64)
-        static const int roots[6] = { 40, 45, 50, 55, 59, 64 };
-        midiNote[i] = roots[i];
     }
+}
+
+void BladeDSP::setTuningPreset(TuningPreset preset)
+{
+    switch (preset) {
+        case TuningPreset::Standard:
+            currentTuning = { 40, 45, 50, 55, 59, 64 };  // EADGBE
+            break;
+        case TuningPreset::DropD:
+            currentTuning = { 38, 45, 50, 55, 59, 64 };  // DADGBE
+            break;
+        case TuningPreset::OpenG:
+            currentTuning = { 38, 43, 50, 55, 57, 62 }; // DGDGBD
+            break;
+        case TuningPreset::HalfStepDown:
+            currentTuning = { 39, 44, 49, 54, 58, 63 };  // Eb Ab Db Gb Bb Eb
+            break;
+        case TuningPreset::FullStepDown:
+            currentTuning = { 36, 41, 46, 51, 55, 60 };  // D G C F A D
+            break;
+        default:
+            currentTuning = { 40, 45, 50, 55, 59, 64 };  // Default to standard
+            break;
+    }
+    
+    // Update MIDI notes for each string
+    for (int i = 0; i < MAX_STRINGS; ++i) {
+        midiNote[i] = currentTuning[i];
+    }
+}
+
+void BladeDSP::setCustomTuning(const std::array<uint8_t, MAX_STRINGS>& tuning)
+{
+    currentTuning = tuning;
+    for (int i = 0; i < MAX_STRINGS; ++i) {
+        midiNote[i] = currentTuning[i];
+    }
+}
+
+std::array<uint8_t, MAX_STRINGS> BladeDSP::getCurrentTuning() const
+{
+    return currentTuning;
 }
 
 void BladeDSP::reset()
@@ -30,6 +72,9 @@ void BladeDSP::reset()
     for (auto& f : blades) f.reset();
     envFollower.fill(0.f);
     activeNote.fill(false);
+    for (int i = 0; i < MAX_STRINGS; ++i) {
+        bladeStates[i] = BladeState();
+    }
 }
 
 void BladeDSP::loadCrepeModel(const juce::String& ptlPath)
@@ -69,7 +114,7 @@ std::vector<NoteEvent> BladeDSP::bladeTrack(const float* audio, int numSamples)
     for (int s = 0; s < numSamples; ++s) {
         float sample = audio[s];
 
-        for (int i = 0; i < 6; ++i) {
+        for (int i = 0; i < MAX_STRINGS; ++i) {
             float filtered = blades[i].processSample(sample);
             float rectified = std::abs(filtered);
 
@@ -95,6 +140,155 @@ std::vector<NoteEvent> BladeDSP::bladeTrack(const float* audio, int numSamples)
 float BladeDSP::hzToVelocity(float rms) const
 {
     return std::clamp(rms * 4.f, 0.f, 1.f);
+}
+
+// ---- MIDI 2.0 Helper Methods ----
+
+int BladeDSP::frequencyToMidiNote(float hz) const
+{
+    if (hz <= 0) return 0;
+    return static_cast<int>(std::round(69.0f + 12.0f * std::log2(hz / 440.0f)));
+}
+
+float BladeDSP::detectVelocity(int stringIndex) const
+{
+    return hzToVelocity(envFollower[stringIndex]);
+}
+
+bool BladeDSP::detectNoteOff(int stringIndex) const
+{
+    return envFollower[stringIndex] < threshold;
+}
+
+BladeState& BladeDSP::getBladeState(int stringIndex)
+{
+    return bladeStates[stringIndex];
+}
+
+// ---- MIDI 2.0 Processing ----
+
+void BladeDSP::processMIDI2(juce::AudioBuffer<float>& buffer, juce::MidiBuffer& midiMessages)
+{
+    // For each active blade/string
+    for (int i = 0; i < MAX_STRINGS; ++i) {
+        auto& blade = bladeStates[i];
+        
+        // Get detected pitch from filters
+        // For IIR mode, use string fundamental; for CREPE, use detected pitch
+        float f0 = 0.0f;
+        if (envFollower[i] > threshold) {
+            f0 = static_cast<float>(kStringFreqs[i]);
+        }
+        
+        if (f0 > 0 && !blade.active) {
+            // Note On detected
+            blade.active = true;
+            blade.f0Hz = f0;
+            blade.lastF0Hz = f0;
+            blade.noteNumber = static_cast<uint8_t>(frequencyToMidiNote(f0));
+            blade.velocity16 = static_cast<uint16_t>(detectVelocity(i) * 65535.0f);
+            blade.velocity7 = static_cast<uint8_t>(blade.velocity16 >> 9);
+            blade.pitchBend32 = 0x80000000;  // Reset to center
+            
+            // Generate MIDI 2.0 Note On
+            uint64_t ump = umpConverter.noteOn32(
+                blade.noteNumber, 
+                blade.velocity16,
+                blade.group, 
+                blade.channel
+            );
+            // Add to MIDI buffer (needs proper UMP handling)
+            midiMessages.addEvent(static_cast<int>(ump), 0);  // Placeholder
+            blade.noteOnSent = true;
+            
+        } else if (blade.active) {
+            // Track pitch changes for pitch bend
+            // In real implementation, this would come from pitch detection
+            float pitchDelta = f0 - blade.lastF0Hz;
+            
+            if (std::abs(pitchDelta) > 0.1f) {
+                // Convert frequency delta to cents
+                float cents = 1200.0f * std::log2(f0 / blade.lastF0Hz);
+                
+                // Convert to 32-bit pitch bend
+                blade.pitchBend32 = UMPConverter::centsToPitchBend32(cents);
+                
+                // Generate MIDI 2.0 Per-Note Pitch Bend
+                uint64_t ump = umpConverter.pitchBend32(
+                    blade.noteNumber,
+                    blade.pitchBend32,
+                    blade.group,
+                    blade.channel
+                );
+                midiMessages.addEvent(static_cast<int>(ump), 0);  // Placeholder
+                
+                blade.lastF0Hz = f0;
+            }
+            
+            // Check for note off (no signal)
+            if (f0 <= 0 || detectNoteOff(i)) {
+                blade.active = false;
+                
+                // Generate MIDI 2.0 Note Off
+                uint64_t ump = umpConverter.noteOff32(
+                    blade.noteNumber,
+                    0,  // Release velocity
+                    blade.group,
+                    blade.channel
+                );
+                midiMessages.addEvent(static_cast<int>(ump), 0);  // Placeholder
+                
+                blade.noteOnSent = false;
+            }
+        }
+    }
+}
+
+void BladeDSP::processMIDI1(juce::AudioBuffer<float>& buffer, juce::MidiBuffer& midiMessages)
+{
+    // MIDI 1.0 fallback - same logic but with 14-bit/7-bit values
+    for (int i = 0; i < MAX_STRINGS; ++i) {
+        auto& blade = bladeStates[i];
+        float f0 = 0.0f;
+        if (envFollower[i] > threshold) {
+            f0 = static_cast<float>(kStringFreqs[i]);
+        }
+        
+        if (f0 > 0 && !blade.active) {
+            blade.active = true;
+            blade.noteNumber = static_cast<uint8_t>(frequencyToMidiNote(f0));
+            blade.velocity7 = static_cast<uint8_t>(detectVelocity(i) * 127.0f);
+            
+            // MIDI 1.0 Note On
+            uint32_t msg = umpConverter.noteOn1(
+                blade.noteNumber,
+                blade.velocity7,
+                blade.channel
+            );
+            // Add to MIDI buffer
+            midiMessages.addEvent(static_cast<int>(msg), 0);
+            
+        } else if (blade.active) {
+            float pitchDelta = f0 - blade.lastF0Hz;
+            
+            if (std::abs(pitchDelta) > 0.1f) {
+                float cents = 1200.0f * std::log2(f0 / blade.lastF0Hz);
+                uint32_t bend32 = UMPConverter::centsToPitchBend32(cents);
+                uint16_t bend14 = UMPConverter::pitchBend32to14(bend32);
+                
+                uint32_t msg = umpConverter.pitchBend1(blade.channel, bend14);
+                midiMessages.addEvent(static_cast<int>(msg), 0);
+                
+                blade.lastF0Hz = f0;
+            }
+            
+            if (f0 <= 0 || detectNoteOff(i)) {
+                blade.active = false;
+                uint32_t msg = umpConverter.noteOff1(blade.noteNumber, 0, blade.channel);
+                midiMessages.addEvent(static_cast<int>(msg), 0);
+            }
+        }
+    }
 }
 
 // ---- LibTorch crepe predictor ----
