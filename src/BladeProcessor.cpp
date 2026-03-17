@@ -33,10 +33,29 @@ void BladeProcessor::processBlock(juce::AudioBuffer<float>& buffer,
     if (buffer.getNumChannels() < 1 || buffer.getNumSamples() < 1)
         return;
 
+    // Auto-detect MIDI protocol on first run
+    static bool protocolInitialized = false;
+    if (!protocolInitialized) {
+        bladeDSP.getMidiNegotiator().detectProtocol();
+        protocolInitialized = true;
+    }
+    
+    // Check current protocol mode
+    auto protocol = bladeDSP.getMidiNegotiator().getCurrentProtocol();
+    
+    // Get audio data
     const float* monoIn  = buffer.getReadPointer(0);
     const int    numSamp = buffer.getNumSamples();
 
-    // Hex-blade IIR tracker -> NoteEvents
+    if (protocol == MIDINegotiator::ProtocolMode::MIDI2_0) {
+        // Use MIDI 2.0 processing with 32-bit per-note expression
+        bladeDSP.processMIDI2(buffer, midiMessages);
+    } else {
+        // Fall back to MIDI 1.0
+        bladeDSP.processMIDI1(buffer, midiMessages);
+    }
+
+    // Also run the standard blade tracker for legacy compatibility
     std::vector<NoteEvent> events = bladeDSP.process(monoIn, numSamp);
 
     for (size_t i = 0; i < events.size(); ++i)
