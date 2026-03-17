@@ -23,3 +23,8 @@ samples/
 # OS
 .DS_Store
 Thumbs.db
+.aider*
+
+# Worktrees
+.worktrees/
+worktrees/
