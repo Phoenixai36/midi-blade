@@ -50,6 +50,7 @@ target_sources(RebornGuitar
         src/MIDINegotiator.h
         src/GuitarProfile.cpp
         src/GuitarProfile.h
+        src/DeviceManager.h
 )
 
 target_compile_definitions(RebornGuitar
